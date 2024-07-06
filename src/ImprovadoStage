@@ -94,9 +94,6 @@ client.connect(hostname, port, username, password)
 # Create an SFTP session over the SSH connection
 sftp = client.open_sftp()
 
-
-
-
 # Ensure the local directory exists
 os.makedirs(local_directory, exist_ok=True)
 
