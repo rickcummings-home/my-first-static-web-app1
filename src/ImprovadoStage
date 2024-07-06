@@ -1,0 +1,174 @@
+import paramiko
+import os
+import sys
+import shutil
+import time
+from datetime import datetime
+import smtplib
+
+
+
+class Debugger:
+    def __init__(self, myLogDirectory, myLogfile):
+        self.LogFile = myLogDirectory + myLogfile
+        self.logDirectory = myLogDirectory
+
+    def log(self, myMessage):
+        print(myMessage)
+        formattedDate = f"{datetime.now():%Y-%m-%d %H-%M-%S}"
+        with open(self.LogFile, "a") as theLogFile:
+            theLogFile.write(formattedDate + ': ' + myMessage + '\n')
+            theLogFile.close  
+
+    def cleanUpLogs(self, myDays):
+        # Calculate the threshold date
+        threshold_date = time.time() - myDays * 86400  # 86400 seconds in a day
+
+        # Iterate through files in the folder
+        for file_path in os.listdir(self.logDirectory):
+            full_path = os.path.join(self.logDirectory, file_path)
+            if os.path.isfile(full_path):
+                file_mtime = os.path.getmtime(full_path)
+                if file_mtime < threshold_date:
+                    try:
+                        os.remove(full_path)
+                        print(f"Deleted: {file_path}")
+                    except Exception as e:
+                        print(f"Error deleting {file_path}: {e}") 
+        
+def copyDirectory(src_dir, dst_dir):
+    # Check if source directory exists
+    if not os.path.exists(src_dir):
+        print(f"The source directory {src_dir} does not exist.")
+        return
+    
+    # Check if destination directory exists, if not, create it
+    if not os.path.exists(dst_dir):
+        os.makedirs(dst_dir)
+    
+    # Copy each file and sub-directory from source to destination
+    for item in os.listdir(src_dir):
+        src_path = os.path.join(src_dir, item)
+        dst_path = os.path.join(dst_dir, item)
+        
+        # If it's a directory, use copytree, else use copy2 for files
+        if os.path.isdir(src_path):
+            shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src_path, dst_path)
+
+
+print('START')
+
+formattedDate = f"{datetime.now():%Y-%m-%dT%H%M%S}"
+localRoot = 'C:\\Users\\CumminR\OneDrive - Parexel\\Documents\Improvado'
+local_directory = localRoot + '\\inbound'
+Backup_directory = 'C:\\Users\\CumminR\OneDrive - Parexel\\Documents\\Improvado\\LastRun'
+FTP_directory = '/Improvado/prod/inbound/'
+myLogDirectory = localRoot + '\\logs\\'
+myDebuggerLog = 'ImprovadoLog' + formattedDate  + '.txt'
+myDebugger = Debugger(myLogDirectory, myDebuggerLog)
+
+# Define the connection parameters
+hostname = 'secure.parexel.com'  
+port = 22  
+username = 'improv-'  
+password = 'Gdjd345@kdi'  
+
+myDebugger.log("Improvado sFTP.  Last Edit: 06-JUL-2024")
+
+# Copy the contents to backup
+myDebugger.log("Contents of " + local_directory + " + to be copied to " + Backup_directory)
+copyDirectory(local_directory, Backup_directory )
+myDebugger.log("Contents of " + local_directory + " + have been copied to " + Backup_directory)
+
+# Initialize the SSH client
+client = paramiko.SSHClient()
+
+# Automatically add the server's host key (this is not secure, for real usage verify the host key)
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+# Connect to the SFTP server
+client.connect(hostname, port, username, password)
+
+# Create an SFTP session over the SSH connection
+sftp = client.open_sftp()
+
+
+
+
+# Ensure the local directory exists
+os.makedirs(local_directory, exist_ok=True)
+
+
+oldFileSize = 0
+newFileSize = 0
+numberOfAttempts = 0
+maximumAttemptsAllowed = 3
+errorFound = False
+
+# Copy each file from the SFTP server to the local directory
+#We'll be looking for errors and retrying.  But only for a pre-set number of times.
+while (numberOfAttempts < maximumAttemptsAllowed):
+    errorFound = False
+    numberOfAttempts += 1
+    myDebugger.log("Attempt {" + str(numberOfAttempts) +"}  out of {" + str(maximumAttemptsAllowed) +"}")
+    
+    # List files in the root directory
+    files = sftp.listdir('/Improvado/prod/inbound')
+    myDebugger.log("Files in the root directory: " + str(files) )
+
+    for file in files:
+        local_path = os.path.join(local_directory, file)
+        remote_path = FTP_directory + file
+        ftpFileSize = sftp.stat(remote_path).st_size
+    
+        myDebugger.log("Copying {" + remote_path + " to {" + local_path + "}")   
+        myDebugger.log("Source file size is {" + str(ftpFileSize) + "}")
+
+        sftp.get(remote_path, local_path)
+    
+        #compare file sizes
+        newFileSize = os.path.getsize(local_path)
+        myDebugger.log( "New file size is {" + str(newFileSize) + "}")
+    
+        if(newFileSize == ftpFileSize):
+            myDebugger.log("Copying {" + remote_path + "} ( {" + str(ftpFileSize) + "} ) to {" + local_path + "} ( {" + str(newFileSize) + "} worked!!!")
+            myDebugger.log("Deleting {" + remote_path + "}")
+            sftp.remove(remote_path)
+        else:  
+            errorFound = True
+            myDebugger.log("Copying {" + remote_path + "} ( {" + str(ftpFileSize) + "} ) to {" + local_path + "} ( {" + str(newFileSize) + "} FAILED!!!  Stopping and Rolling Back.")
+
+            #Recover last good run for this file
+            try:
+                shutil.copy2(Backup_directory +'\\' + file, local_directory +'\\' + file)
+            except Exception as e:
+                myDebugger.log('Failed recover: '+ e)
+            #An error requires you break out of the FOR loop and try again 
+            break
+        #end if
+    #end for
+
+    
+    if errorFound == True:
+        myDebugger.log("There was an error.  We will try again if more attempts are allowed.  The WHILE loop will force this retry.")
+    else:
+        if(numberOfAttempts >= maximumAttemptsAllowed):
+            myDebugger.log(f"Too many attempts: {numberOfAttempts} out of: {maximumAttemptsAllowed}.  Processing will end.  THIS SHOULD NOT HAPPEN WHEN THERE IS NO ERROR")
+        else: 
+            #Clean run;  break out of the loop that retries if there is a failure
+           myDebugger.log("There was NO error.")
+           break
+    #end if
+ #end while   
+    
+# Close the SFTP session and SSH connection
+sftp.close()
+client.close()
+
+myDebugger.log('Deleting old logs')
+myDebugger.cleanUpLogs(3)
+
+print('DONE ' )
+sys.exit(0)
