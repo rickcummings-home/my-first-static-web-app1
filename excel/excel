@@ -1,0 +1,5 @@
+from openpyxl import load_workbook
+workbook = load_workbook('----------/dataset.xlsx')
+sheet = workbook.active  
+for i in sheet:
+   print(sheet.cell(row=i, column=2).value)
